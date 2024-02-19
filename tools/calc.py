@@ -26,6 +26,9 @@ class Calculator:
             elif calc_type in ["single-point", "single"]:
                 energy = self.lasp_single_calc(atoms)
                 return energy
+            elif calc_type in ["ssw", "SSW"]:
+                energy = self.lasp_ssw_calc(atoms)
+                return energy
             elif calc_type in ['MD', 'md']:
                 atoms = self.lasp_md_calc(atoms)
                 return atoms
