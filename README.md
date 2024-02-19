@@ -1,1 +1,1 @@
-# off_lattice_kmc
+# Off lattice kmc
