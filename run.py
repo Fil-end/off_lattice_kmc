@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import ase
 from ase.io import read, write
 from ase.cluster.wulff import wulff_construction
+from ase.io.lasp_PdO import read_arc
 
 from env import OffLatticeKMC, ACTION_SPACES
 from tools.calc import Calculator
@@ -23,18 +24,23 @@ class RunKMC():
     def __init__(self, 
                  model_path:str = 'PdO',
                  calculate_method:str = 'LASP',
-                 max_observaton_atoms:int = 400,
+                 max_observaton_atoms:int = None,    # 400 for single cluster, 3000 for zeolite 
                  save_dir:Optional[str]=None,
                  save_every:Optional[int] = None,
+                 in_zeolite: bool = False,
                  ) -> None:
-        self.initial_slab = self._generate_initial_slab()
+        self.initial_slab = self._generate_initial_slab(re_read=in_zeolite)
         self.calculator = Calculator(model_path = model_path, calculate_method=calculate_method, temperature_K=TEMPERATURE_K)
         self.atoms, initial_energy, _ = self.calculator.to_calc(self.initial_slab, calc_type = 'opt')
 
         self.env = OffLatticeKMC(initial_slab=self.initial_slab, 
                                  calculator = self.calculator, 
-                                 cutoff = 4.0, 
+                                 cutoff = 4.0,
+                                 in_zeolite=in_zeolite, 
                                  )
+
+        if in_zeolite:
+            self.initial_slab = self._preprocessing(self.initial_slab)
         
         self.initial_energy = initial_energy + self.env.n_O2 * self.env.E_O2 + self.env.n_O3 * self.env.E_O3
         self.max_observation_atoms = max_observaton_atoms
@@ -64,29 +70,22 @@ class RunKMC():
     def run(self, atoms:ase.Atoms, num_episode: int) -> ase.Atoms:
         previous_atoms = atoms.copy()
         previous_energy = self.history['energies'][-1]
-        # print(f"The previous energy is {previous_energy}")
         atoms, tmp_state_dict = self.env.step(atoms, previous_energy, num_episode)
 
         current_energy = tmp_state_dict['energy']
         barrier = tmp_state_dict['barrier']
 
-        # print(f"The previous n O2, O3 is {self.history['adsorbates'][-1][0]}")
         prob = min(1, math.exp(-barrier / (K * TEMPERATURE_K)))
-        print(f"THe prob is {prob}")
+        print(f"The prob is {prob}")
         if prob > np.random.random():
             energy = current_energy
-            print(f"Action accepted")
         else:
             atoms = previous_atoms
             energy = previous_energy
             barrier = 10E-8
-            # adsorbates = self.history['adsorbates'][-1]
             self.env.n_O2, self.env.n_O3 = self.history['adsorbates'][-1][0], self.history['adsorbates'][-1][1]
-            print(f"Action denied")
 
         adsorbates = (self.env.n_O2, self.env.n_O3)
-
-        # print(f"The current n O2 is {self.env.n_O2}, n O3 is {self.env.n_O3}")
 
         self.pd = nn.ZeroPad2d(padding = (0,0,0,self.max_observation_atoms-len(atoms.get_positions())))
         self.update_history(atoms, tmp_state_dict['action'], energy, barrier, adsorbates)
@@ -97,7 +96,6 @@ class RunKMC():
         return atoms
     
     def update_history(self, atoms:ase.Atoms, action:int, energy:float, barrier: float, adsorbates: Tuple[int, int]) -> None:
-        # self.history['structures'] + [np.array(self.pd(torch.tensor(atoms.get_positions())).flatten())]
         self.history['structures'].append(np.array(self.pd(torch.tensor(atoms.get_positions())).flatten()))
         self.history['energies'].append(energy)
         self.history['actions'].append(action)
@@ -141,10 +139,17 @@ class RunKMC():
         plt.savefig(save_path, bbox_inches='tight')
         return plt.close('all')
 
+    def _preprocessing(self, system:ase.Atoms) -> ase.Atoms:
+        zeolite = system.copy()
+        del zeolite[[a.index for a in zeolite if a.symbol == self.env.cluster_metal]]
+        initial_cluster = system.copy()
+        del initial_cluster[[a.index for a in initial_cluster if a.symbol != self.env.cluster_metal]]
+        system = zeolite + initial_cluster
+        return system
 
     def _generate_initial_slab(self, re_read: bool = False) -> ase.Atoms:
-        if os.path.exists('./input.xyz') and re_read:
-            atoms = read('input.xyz')
+        if os.path.exists('./initial_input.arc') and re_read:
+            atoms = read_arc('initial_input.arc')[0]
         else:
             surfaces = [(1, 0, 0),(1, 1, 0), (1, 1, 1)]
             esurf = [1.0, 1.0, 1.0]   # Surface energies.
@@ -191,7 +196,7 @@ class RunKMC():
                                     'action': '%d' % self.history['actions'][-1]})
     
 if __name__ == '__main__':
-    model = RunKMC(calculate_method='MACE', model_path = 'PdO.model', save_dir='save_dir', save_every=100)
+    model = RunKMC(calculate_method='MACE', model_path = 'PdSiOH.model', save_dir='save_dir', max_observaton_atoms=3000, save_every=100, in_zeolite = True)
     atoms = model.initial_slab
     print(model.env.E_O2)
     log_dir = './save_dir/save_model/'
