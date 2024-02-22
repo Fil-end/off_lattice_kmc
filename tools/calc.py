@@ -8,7 +8,7 @@ from ase import units
 from ase.optimize import QuasiNewton, LBFGS, LBFGSLineSearch
 from ase.units import Hartree
 from ase.io.lasp_PdO import write_arc, read_arc
-from ase.calculators.lasp_PdO import LASP
+from ase.calculators.lasp_bulk import LASP
 from ase.calculators.emt import EMT
 from ase.md.langevin import Langevin
 
@@ -25,6 +25,9 @@ class Calculator:
                 return atoms, energy, force
             elif calc_type in ["single-point", "single"]:
                 energy = self.lasp_single_calc(atoms)
+                return energy
+            elif calc_type in ["ssw", "SSW"]:
+                energy = self.lasp_ssw_calc(atoms)
                 return energy
             elif calc_type in ['MD', 'md']:
                 atoms = self.lasp_md_calc(atoms)
@@ -43,7 +46,7 @@ class Calculator:
                 energy = self.mace_single_calc(atoms)
                 return energy
             elif calc_type in ['MD', 'md']:
-                atoms = self.lasp_md_calc(atoms)
+                atoms = self.mace_md_calc(atoms)
                 return atoms
             else:
                 raise ValueError("No such calc type currently!!!")
@@ -92,13 +95,14 @@ class Calculator:
         from mace.calculators import MACECalculator
         from ase.calculators.mace_lj import MaceLjCalculator
 
+        steps = 100
         if self.model_path is None:
             self.model_path = 'my_mace.model'
         calculator = MACECalculator(model_paths=self.model_path, device='cuda')
         atoms.set_calculator(calculator)
         dyn = Langevin(atoms, 5 * units.fs, self.temperature_K * units.kB, 0.002, trajectory='md.traj',
                            logfile='MD.log')
-        dyn.run(self.steps)
+        dyn.run(steps)
         return atoms
     
     '''-------------------LASP_calc---------------------------'''    
