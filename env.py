@@ -173,7 +173,7 @@ class OffLatticeKMC():
 
         action_list = self.generate_action_list(atoms, selected_site)
         if not action_list or episode % 100 == 0:
-            action_list = [1,2,3,4]
+            action_list = [1,2,3]
 
         print(f"The current action_list is {action_list}")
 
