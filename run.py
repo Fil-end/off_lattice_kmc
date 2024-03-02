@@ -14,6 +14,7 @@ from ase.io.lasp_PdO import read_arc
 
 from env import OffLatticeKMC, ACTION_SPACES
 from tools.calc import Calculator
+from tools.utils import to_pad_the_array
 
 K = 8.6173324e-05
 TEMPERATURE_K = 473.15
@@ -24,7 +25,7 @@ class RunKMC():
     def __init__(self, 
                  model_path:str = 'PdO',
                  calculate_method:str = 'LASP',
-                 max_observaton_atoms:int = None,    # 400 for single cluster, 3000 for zeolite 
+                 max_observation_atoms:int = None,    # 400 for single cluster, 3000 for zeolite 
                  save_dir:Optional[str]=None,
                  save_every:Optional[int] = None,
                  in_zeolite: bool = False,
@@ -43,7 +44,7 @@ class RunKMC():
             self.initial_slab = self._preprocessing(self.initial_slab)
         
         self.initial_energy = initial_energy + self.env.n_O2 * self.env.E_O2 + self.env.n_O3 * self.env.E_O3
-        self.max_observation_atoms = max_observaton_atoms
+        self.max_observation_atoms = max_observation_atoms
         self.pd = nn.ZeroPad2d(padding = (0,0,0,self.max_observation_atoms-len(self.atoms.get_positions())))
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
@@ -55,7 +56,7 @@ class RunKMC():
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
 
-        results = ['energies', 'actions', 'structures', 'timesteps', 'barriers']
+        results = ['energies', 'actions', 'structures', 'timesteps', 'barriers', 'adsorbates', 'symbols']
         self.history = {}
         for item in results:
             self.history[item] = []
@@ -66,6 +67,7 @@ class RunKMC():
         self.history['real_time'] = [0.0]
         self.history['barriers'] = [0]
         self.history['adsorbates'] = [(self.env.n_O2, self.env.n_O3)]
+        self.history['symbols'] = [to_pad_the_array(np.array(self.atoms.get_chemical_symbols()), max_len = self.max_observation_atoms, symbols = True)]
 
     def run(self, atoms:ase.Atoms, num_episode: int) -> ase.Atoms:
         previous_atoms = atoms.copy()
@@ -93,6 +95,7 @@ class RunKMC():
             self.save_episode()
             self.plot_episode()
 
+        print(f"The final atoms is {atoms}")
         return atoms
     
     def update_history(self, atoms:ase.Atoms, action:int, energy:float, barrier: float, adsorbates: Tuple[int, int]) -> None:
@@ -103,6 +106,7 @@ class RunKMC():
         self.history['real_time'].append(self.history['real_time'][-1] + KCAL_2_EV * barrier / (R * TEMPERATURE_K))
         self.history['barriers'].append(barrier)
         self.history['adsorbates'].append(adsorbates)
+        self.history['symbols'].append(to_pad_the_array(np.array(self.atoms.get_chemical_symbols()), max_len = self.max_observation_atoms, symbols = True))
 
     def save_episode(self) -> None:
         save_path = os.path.join(self.history_dir, "kmc_info.npz")
@@ -115,7 +119,8 @@ class RunKMC():
             structures=self.history['structures'],
             timesteps=self.history['timesteps'],
             real_time=self.history['real_time'],
-            barriers=self.history['barriers'] 
+            barriers=self.history['barriers'],
+            symbols = self.history['symbols'],
         )
         return
 
@@ -187,7 +192,7 @@ class RunKMC():
                         'atoms' : atoms,
                     }
 
-                    if (max_episodes/d* i + i_episode + 1) % 100 == 0:
+                    if (max_episodes/d* i + i_episode + 1) % d == 0:
                         torch.save(checkpoint, log_dir + 'model.pkl')
                     
                     pbar.update(1)
@@ -196,7 +201,7 @@ class RunKMC():
                                     'action': '%d' % self.history['actions'][-1]})
     
 if __name__ == '__main__':
-    model = RunKMC(calculate_method='MACE', model_path = 'PdSiOH.model', save_dir='save_dir', max_observaton_atoms=3000, save_every=100, in_zeolite = True)
+    model = RunKMC(calculate_method='MACE', model_path = 'PdSiOH.model', save_dir='save_dir', max_observation_atoms=2500, save_every=100, in_zeolite = True)
     atoms = model.initial_slab
     print(model.env.E_O2)
     log_dir = './save_dir/save_model/'
