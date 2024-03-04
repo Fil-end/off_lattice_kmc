@@ -67,7 +67,8 @@ class RunKMC():
         self.history['real_time'] = [0.0]
         self.history['barriers'] = [0]
         self.history['adsorbates'] = [(self.env.n_O2, self.env.n_O3)]
-        self.history['symbols'] = [to_pad_the_array(np.array(self.atoms.get_chemical_symbols()), max_len = self.max_observation_atoms, symbols = True)]
+        self.history['symbols'] = [to_pad_the_array(np.array(self.atoms.get_chemical_symbols()), max_len = self.max_observation_atoms, 
+                                                            position = False, symbols = True)]
 
     def run(self, atoms:ase.Atoms, num_episode: int) -> ase.Atoms:
         previous_atoms = atoms.copy()
@@ -106,7 +107,8 @@ class RunKMC():
         self.history['real_time'].append(self.history['real_time'][-1] + KCAL_2_EV * barrier / (R * TEMPERATURE_K))
         self.history['barriers'].append(barrier)
         self.history['adsorbates'].append(adsorbates)
-        self.history['symbols'].append(to_pad_the_array(np.array(self.atoms.get_chemical_symbols()), max_len = self.max_observation_atoms, symbols = True))
+        self.history['symbols'].append(to_pad_the_array(np.array(self.atoms.get_chemical_symbols()), max_len = self.max_observation_atoms, 
+                                                        position = False, symbols = True))
 
     def save_episode(self) -> None:
         save_path = os.path.join(self.history_dir, "kmc_info.npz")
