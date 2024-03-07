@@ -70,17 +70,21 @@ class OffLatticeKMC():
         
         # pre_processing the Zeolite system
         if self.in_zeolite:
-            self.system = self.initial_slab
+            self.system = self.initial_slab.copy()
             self.zeolite = self.system.copy()
             del self.zeolite[[a.index for a in self.zeolite if a.symbol == self.cluster_metal]]
-            self.initial_slab = self._mock_cluster()
+            self.cluster = self.system.copy()
+            del self.cluster[[a.index for a in self.cluster if a.symbol != self.cluster_metal]]
+            self.system = self.zeolite + self.cluster
 
-            center_point = [self.system.get_cell()[0][0]/2, self.system.get_cell()[1][1]/2, self.system.get_cell()[2][2] - 2]
-            self.free_list = self._get_free_atoms_list(self.system, center_point=center_point, d_max=23.0)
-            self.fix_list = [i for n, i in enumerate(self.free_list) if i not in self.free_list[:n]]
+        else:
+            self.system = self.cluster_actions.rectify_atoms_positions(self.initial_slab)
 
-        # get all surface atoms
-        self.total_surfaces = self.initial_slab.get_surfaces()
+        # get all surfaces
+        self.total_surfaces = self._mock_cluster().get_surfaces()
+
+        self.free_list = self._get_free_atoms_list(self.system)
+        self.fix_list = [atom_idx for atom_idx in range(len(self.system)) if atom_idx not in self.free_list]
 
         # calculate the energy of single molecule
         self.n_O2 = 2000
@@ -93,7 +97,7 @@ class OffLatticeKMC():
         self.E_O2 = self.add_mole(self.initial_slab, 'OO', 1.21)
         self.E_O3 = self.add_mole(self.initial_slab, 'OOO', 1.28)
 
-        self.initial_slab = self.cluster_actions.rectify_atoms_positions(self.initial_slab)
+        # self.initial_slab = self.cluster_actions.rectify_atoms_positions(self.initial_slab)
 
     def generate_neigh_atoms(self, atoms:ase.Atoms, target_site:np.ndarray) -> List[int]:
         neigh_atom_index_list = []
@@ -117,7 +121,7 @@ class OffLatticeKMC():
         '''
         action_list = []
         neigh_atom_index_list = self.generate_neigh_atoms(atoms, target_site)
-        if self._can_adsorb(atoms, target_site, neigh_atom_index_list, vector):
+        if self._can_adsorb(atoms, target_site, neigh_atom_index_list):
             action_list.append(0)
         if self._can_diffuse(atoms, neigh_atom_index_list):
             action_list.extend([5, 6])
@@ -133,7 +137,7 @@ class OffLatticeKMC():
         '''
         self.facet_selection = self.total_surfaces[np.random.randint(len(self.total_surfaces))]
         if self.in_zeolite:
-            self.center_point = self.cluster_actions.get_center_point(self._get_cluster(atoms))
+            self.center_point = self.cluster_actions.get_center_point(self._get_cluster(atoms, with_zeolite=self.in_zeolite))
         else:
             self.center_point = self.cluster_actions.get_center_point(atoms)
 
@@ -197,7 +201,6 @@ class OffLatticeKMC():
             new_state = atoms.copy()
             write_arc([new_state], name = "chk_pt.arc")
             new_state = self.choose_actions(new_state, action_idx, selected_site, selected_vector)   # here new_state is cluster
-            new_state = self.cluster_actions.recover_rotation(new_state, self.facet_selection, self.center_point)
             new_state = self.cluster_actions.rectify_atoms_positions(new_state, self.center_point)
 
             write_arc([new_state], name = "chk_pt_1.arc")
@@ -261,6 +264,9 @@ class OffLatticeKMC():
         return atoms, state_dict
 
     def choose_actions(self, atoms:ase.Atoms, action_idx:str, selected_site:np.ndarray, selected_vector:List) -> ase.Atoms:
+        if action_idx in [1,2,3,8]:
+            atoms = self._get_cluster(atoms, with_zeolite=self.in_zeolite)
+
         self.to_constraint(atoms)
         if action_idx == 0:
             atoms = self._adsorb(atoms, selected_site, selected_vector)
@@ -293,6 +299,11 @@ class OffLatticeKMC():
         else:
             print('No such action')
 
+        atoms = self.cluster_actions.recover_rotation(atoms, self.facet_selection, self.center_point)
+
+        if action_idx in [1,2,3,8]:
+            atoms = self._get_system(atoms, with_zeolite=self.in_zeolite)
+
         return atoms
 
     def _generate_initial_slab(self, re_read = False) -> ase.atoms:
@@ -324,7 +335,7 @@ class OffLatticeKMC():
     def get_constraint(self, atoms:ase.Atoms, with_zeolite:bool = False) -> FixAtoms:
         if with_zeolite:
             constrain_list = self.fix_list
-            constraint = FixAtoms(mask=[a.index not in constrain_list for a in atoms]) 
+            constraint = FixAtoms(mask=[a.index in constrain_list for a in atoms]) 
         else:
             surfList = []
             for facet in self.total_surfaces:
@@ -335,7 +346,7 @@ class OffLatticeKMC():
                 atoms = self.cluster_actions.recover_rotation(atoms, facet, self.center_point)
             constrain_list = [i for n, i in enumerate(surfList) if i not in surfList[:n]]
             # print(f"The current constrain list is {constrain_list}")
-            constraint = FixAtoms(mask=[a.symbol != 'O' and a.index not in constrain_list for a in atoms])
+            constraint = FixAtoms(mask=[a.symbol != 'O' and a.index in constrain_list for a in atoms])
         return constraint
     
     def to_constraint(self, atoms:ase.Atoms, with_zeolite:bool = False) -> None: # depending on such type of atoms
@@ -353,7 +364,7 @@ class OffLatticeKMC():
             d = 1.0
         return d
     
-    def _adsorb(self, atoms: ase.Atoms, selected_site:np.ndarray, ads_vector) -> ase.Atoms:
+    def _adsorb(self, atoms: ase.Atoms, selected_site:np.ndarray, ads_vector = None) -> ase.Atoms:
         new_state = atoms.copy() 
         ads_site = selected_site
         choosed_adsorbate = np.random.randint(len(self.ads_list))
@@ -365,12 +376,8 @@ class OffLatticeKMC():
             if ads == 2:
                 self.n_O2 -= 1
                 d = self.get_ads_d(ads_site)
-                O1 = Atom('O', (ads_site[0] + ads_vector[0] * d, 
-                                ads_site[1] + ads_vector[1] * d, 
-                                ads_site[2] + ads_vector[2] * d))
-                O2 = Atom('O', (ads_site[0] + ads_vector[0] * (d + 1.21), 
-                                ads_site[1] + ads_vector[1] * (d + 1.21), 
-                                ads_site[2] + ads_vector[2] * (d + 1.21)))
+                O1 = Atom('O', (ads_site[0], ads_site[1], ads_site[2] + d))
+                O2 = Atom('O', (ads_site[0], ads_site[1], ads_site[2] + (d + 1.21)))
                 new_state = new_state + O1
                 new_state = new_state + O2
 
@@ -457,7 +464,7 @@ class OffLatticeKMC():
 
     def _md(self, atoms:ase.Atoms):
         if self.in_zeolite:
-            atoms = self._get_system(atoms)
+            atoms = self._get_system(atoms, with_zeolite=self.in_zeolite)
 
         if self.calculator.calculate_method in ["MACE", "Mace", "mace"]:
             atoms = self.calculator.to_calc(atoms, 'MD')
@@ -465,7 +472,7 @@ class OffLatticeKMC():
             atoms = self.calculator.to_calc(atoms, 'ssw')
 
         if self.in_zeolite:
-            atoms = self._get_cluster(atoms)
+            atoms = self._get_cluster(atoms, with_zeolite=self.in_zeolite)
 
     def _diffuse(self, slab:ase.Atoms, selected_site: np.ndarray, diffuse_vector:List) -> ase.Atoms:
         total_layer_O, _ = self.get_O_info(slab)
@@ -659,7 +666,7 @@ class OffLatticeKMC():
             if to_dissociate_facet_list:
                 self.facet_selection = to_dissociate_facet_list[np.random.randint(len(to_dissociate_facet_list))]
 
-            slab = self.cluster_actions.cluster_rotation(slab, self.facet_selection)
+            slab = self.cluster_actions.cluster_rotation(slab, self.facet_selection, self.center_point)
             surf_sites, surf_plane_vector = self.get_surf_sites(slab)
 
         for ads_site in surf_sites:
@@ -764,6 +771,7 @@ class OffLatticeKMC():
         return new_state
     
     def get_dissociate_O2_list(self, slab: ase.Atoms) -> List:
+        slab = self._get_cluster(slab, with_zeolite=self.in_zeolite)
         ana = Analysis(slab)
         OOBonds = ana.get_bonds('O','O',unique = True)
         PdOBonds = ana.get_bonds(self.cluster_metal, 'O', unique = True)
@@ -781,6 +789,8 @@ class OffLatticeKMC():
             for j in OOBonds[0]:
                 if (j[0] in layerList or j[1] in layerList) and (j[0] in Pd_O_list or j[1] in Pd_O_list):
                     dissociate_O2_list.append([(j[0],j[1])])
+            
+        dissociate_O2_list = self._map_zeolite(dissociate_O2_list, with_zeolite=self.in_zeolite)
 
         return dissociate_O2_list
     
@@ -1052,6 +1062,7 @@ class OffLatticeKMC():
 
     '''------------This part will gain adsorbate information--------------'''
     def layer_O_atom_list(self, slab:ase.Atoms) -> List:
+        slab = self._get_cluster(slab, with_zeolite=self.in_zeolite)
         layer_O = []
         layer_O_atom_list = []
         layer_OObond_list = []
@@ -1073,9 +1084,11 @@ class OffLatticeKMC():
             for j in layer_O:
                 if j not in layer_OObond_list:
                     layer_O_atom_list.append(j)
+        layer_O_atom_list = self._map_zeolite(layer_O_atom_list,with_zeolite=True)
         return layer_O_atom_list
     
     def sub_O_atom_list(self, slab:ase.Atoms) -> List:
+        slab = self._get_cluster(slab, with_zeolite=self.in_zeolite)
         sub_O = []
         sub_O_atom_list = []
         sub_OObond_list = []
@@ -1097,9 +1110,12 @@ class OffLatticeKMC():
             for j in sub_O:
                 if j not in sub_OObond_list:
                     sub_O_atom_list.append(j)
+        sub_O_atom_list = self._map_zeolite(sub_O_atom_list, with_zeolite=True)
         return sub_O_atom_list
     
     def get_O_info(self, slab:ase.Atoms) -> List:
+        slab = self._get_cluster(slab, with_zeolite=self.in_zeolite)
+
         layer_O_total = []
         sub_O_total = []
 
@@ -1133,6 +1149,9 @@ class OffLatticeKMC():
         for j in total_sub_atom_list:
             if j in total_O_list:
                 sub_O_total.append(j)
+
+        layer_O_total = self._map_zeolite(layer_O_total, with_zeolite=self.in_zeolite)
+        sub_O_total = self._map_zeolite(sub_O_total, with_zeolite=self.in_zeolite)
         return layer_O_total, sub_O_total
     
     '''----------------Zeolite functions-------------------'''
@@ -1142,14 +1161,14 @@ class OffLatticeKMC():
         else:
             return None
 
-    def _get_cluster(self, system:ase.Atoms) -> ase.Atoms:
-        if self.in_zeolite:
+    def _get_cluster(self, system:ase.Atoms, with_zeolite:Optional[bool]=False) -> ase.Atoms:
+        if with_zeolite:
             return system[[a.index for a in system if a.index not in range(len(self.zeolite))]]
         else:
             return system
     
-    def _get_system(self, atoms:ase.Atoms) -> ase.Atoms:
-        if self.in_zeolite:
+    def _get_system(self, atoms:ase.Atoms, with_zeolite:Optional[bool] = False) -> ase.Atoms:
+        if with_zeolite:
             return self.zeolite + atoms
         else:
             return atoms
@@ -1162,19 +1181,25 @@ class OffLatticeKMC():
         """
         The function is to get the free atoms on zeolite
         """
-        atoms = self._get_cluster(system)
+        central_cluster = self._get_cluster(system, with_zeolite=self.in_zeolite)
         if not center_point:
-            center_point = self.cluster_actions.get_center_point(atoms)
-        # d_max = np.max(np.sqrt(np.diagonal(np.inner(atoms.get_positions() - center_point,
-        #                                             atoms.get_positions() - center_point)))) + 3.0
+            center_point = self.cluster_actions.get_center_point(central_cluster)
+        d_max = np.max(np.sqrt(np.diagonal(np.inner(central_cluster.get_positions() - center_point,
+                                                    central_cluster.get_positions() - center_point)))) + 3.0
 
 
-        # print(f"The d max of cluster is {d_max}")
+        print(f"The d max of cluster is {d_max}")
         d_array = np.sqrt(np.diagonal(np.inner(system.get_positions() - center_point,
                                                system.get_positions() - center_point)))
         free_list = np.where(d_array < d_max)[0].tolist()
         print(f"The length of free list is {len(free_list)}")
         return free_list
+    
+    def _map_zeolite(self, idx_list: List, with_zeolite: Optional[bool] = False) -> List:
+        if with_zeolite:
+            return (np.array(idx_list) + len(self.zeolite)).tolist()
+        else:
+            return idx_list
     
     '''---------------Neighbour facet----------------------'''
     def neighbour_facet(self, atoms:ase.Atoms, facet:List) -> List:
@@ -1184,7 +1209,7 @@ class OffLatticeKMC():
         neighbour_facet.append(facet)
         for selected_facet in self.total_surfaces:
             if selected_facet[0] != facet[0] or selected_facet[1] != facet[1] or selected_facet[2] != facet[2]:
-                atoms = self.cluster_actions.cluster_rotation(atoms, selected_facet)
+                atoms = self.cluster_actions.cluster_rotation(atoms, selected_facet, self.center_point)
                 selected_surface_list = self.get_surf_atoms(atoms)
                 atoms = self.cluster_actions.recover_rotation(atoms, selected_facet, self.center_point)
                 repeat_atoms = [i for i in selected_surface_list if i in surface_list]
@@ -1229,16 +1254,13 @@ class OffLatticeKMC():
         return d
     
     '''----------------Whether can do such action------------------'''
-    def _can_adsorb(self, atoms:ase.Atoms, target_site: np.ndarray, neigh_atom_index_list:List, ads_vector:List) -> bool:
+    def _can_adsorb(self, atoms:ase.Atoms, target_site: np.ndarray, neigh_atom_index_list:List, ads_vector:List = None) -> bool:
         action_can_do = False
         d_list = []
         for atom_idx in neigh_atom_index_list:
             atom = atoms[atom_idx]
             if atom.symbol == 'O':
-                d = self.distance(target_site[0] + ads_vector[0] * 1.5, 
-                                  target_site[1] + ads_vector[1] * 1.5, 
-                                  target_site[2] +  + ads_vector[0] * 1.5,
-                                  atom.position[0], atom.position[1], atom.position[2])
+                d = self.distance(target_site[0], target_site[1], target_site[2] + 1.5,atom.position[0], atom.position[1], atom.position[2])
                 d_list.append(d)
         
         if d_list:
