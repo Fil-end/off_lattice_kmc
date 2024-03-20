@@ -8,16 +8,17 @@ import numpy as np
 import math
 from math import cos, sin
 from scipy.spatial import Delaunay
-from typing import List, Dict, Tuple, Set, Any, Optional
+from typing import List, Optional
 
 import ase
 from ase import Atom
-from ase.io import read, write
-from ase.io.lasp_PdO import write_arc
-from ase.constraints import FixAtoms
+from ase.build import molecule
 from ase.cluster.wulff import wulff_construction
+from ase.constraints import FixAtoms
 from ase.geometry.analysis import Analysis
-from ase.io.lasp_PdO import read_arc
+from ase.io import read
+from ase.io.lasp_PdO import write_arc, read_arc
+
 
 # 设定动作空间
 ACTION_SPACES = ['ADS', 'Translation', 'R_Rotation', 'L_Rotation', 'MD', 'Diffusion', 'Drill', 'Dissociation', 'Desportion']
@@ -77,6 +78,8 @@ class OffLatticeKMC():
             del self.cluster[[a.index for a in self.cluster if a.symbol != self.cluster_metal]]
             self.system = self.zeolite + self.cluster
 
+            self.initial_slab = self.cluster.copy()
+
         else:
             self.system = self.cluster_actions.rectify_atoms_positions(self.initial_slab)
 
@@ -94,10 +97,8 @@ class OffLatticeKMC():
         for _ in range(self.n_O2):
             self.ads_list.append(2)
 
-        self.E_O2 = self.add_mole(self.initial_slab, 'OO', 1.21)
-        self.E_O3 = self.add_mole(self.initial_slab, 'OOO', 1.28)
-
-        # self.initial_slab = self.cluster_actions.rectify_atoms_positions(self.initial_slab)
+        self.E_O2 = self.add_mole("O2")
+        self.E_O3 = self.add_mole("O3")
 
     def generate_neigh_atoms(self, atoms:ase.Atoms, target_site:np.ndarray) -> List[int]:
         neigh_atom_index_list = []
@@ -1359,21 +1360,7 @@ class OffLatticeKMC():
     
 
     '''---------------calculate single mole energy -------------------------'''
-    def add_mole(self, atom, mole, d):
-        new_state = atom.copy()
-        energy_1 = self.calculator.to_calc(new_state, calc_type='single')
-        if len(mole) == 2:
-            ele_1 = Atom(mole[0], (atom.get_cell()[0][0] / 2, atom.get_cell()[1][1] / 2, atom.get_cell()[2][2] - 5.0))
-            ele_2 = Atom(mole[1], (atom.get_cell()[0][0] / 2, atom.get_cell()[1][1] / 2, atom.get_cell()[2][2] - 5.0 + d))
-            new_state = new_state + ele_1
-            new_state = new_state + ele_2
-        elif len(mole) == 3:
-            ele_1 = Atom(mole[0], (atom.get_cell()[0][0] / 2, atom.get_cell()[1][1] / 2, atom.get_cell()[2][2] - 5.0))
-            ele_2 = Atom(mole[1], (atom.get_cell()[0][0] / 2 - 0.6 * d, atom.get_cell()[1][1] / 2, atom.get_cell()[2][2] - 5.0 + 0.8 * d))
-            ele_3 = Atom(mole[1], (atom.get_cell()[0][0] / 2 + 0.6 * d, atom.get_cell()[1][1] / 2, atom.get_cell()[2][2] - 5.0 + 0.8 * d))
-            new_state = new_state + ele_1
-            new_state = new_state + ele_2
-            new_state = new_state + ele_3
-        energy_2 = self.calculator.to_calc(new_state, calc_type='single')
-        energy = energy_2 - energy_1
+    def add_mole(self, mole:str) -> float:
+        mole = molecule(mole)
+        energy = self.calculator.to_calc(mole, calc_type = 'single')
         return energy
