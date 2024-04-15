@@ -9,9 +9,10 @@ import math
 from math import cos, sin
 from scipy.spatial import Delaunay
 from typing import List, Optional
+import logging
 
 import ase
-from ase import Atom
+from ase import Atom, Atoms
 from ase.build import molecule
 from ase.cluster.wulff import wulff_construction
 from ase.constraints import FixAtoms
@@ -31,6 +32,7 @@ d_O_O = 2 * r_O
 d_Pd_Pd = 2 * r_Pd
 d_Si_Pd = r_Si + r_Pd
 
+logger = logging.getLogger(__name__)
 
 class OffLatticeKMC():
     '''
@@ -93,10 +95,6 @@ class OffLatticeKMC():
         self.n_O2 = 2000
         self.n_O3 = 0
 
-        self.ads_list = []
-        for _ in range(self.n_O2):
-            self.ads_list.append(2)
-
         self.E_O2 = self.add_mole("O2")
         self.E_O3 = self.add_mole("O3")
 
@@ -136,6 +134,7 @@ class OffLatticeKMC():
             This part is the main part of the off-lattice kmc project, and it will interact
             with the main.py
         '''
+        self.ads_list = self.n_O2 * [2] + self.n_O3 * [3]
         self.facet_selection = self.total_surfaces[np.random.randint(len(self.total_surfaces))]
         if self.in_zeolite:
             self.center_point = self.cluster_actions.get_center_point(self._get_cluster(atoms, with_zeolite=self.in_zeolite))
@@ -143,38 +142,12 @@ class OffLatticeKMC():
             self.center_point = self.cluster_actions.get_center_point(atoms)
 
         atoms = self.cluster_actions.cluster_rotation(atoms, self.facet_selection, self.center_point)
-        # total_layer_O_list, total_sub_O_list = self.get_O_info(atoms)
 
-        surfList = self.get_surf_atoms(atoms)
-        surf_metal_list = self.get_surf_metal_atoms(atoms, surfList)
+        # surfList = self.get_surf_atoms(atoms)
+        # surf_metal_list = self.get_surf_metal_atoms(atoms, surfList)
 
-        print(f"The initial_len(surf_metal_list is) {len(surf_metal_list)}")
-        # if len(surf_metal_list) > 3:
+        # print(f"The initial_len(surf_metal_list is) {len(surf_metal_list)}")
         surf_sites, surf_plane_vector = self.get_surf_sites(atoms)
-        # else:
-        #     atoms = self.cluster_actions.recover_rotation(atoms, self.facet_selection, self.center_point)
-        #     addable_facet_list = []
-        #     prior_ads_list = []
-        #    for facet in self.total_surfaces:
-        #         atoms = self.cluster_actions.cluster_rotation(atoms, facet, self.center_point)
-        #         list = self.get_surf_atoms(atoms)
-        #         surf_metal_list_tmp = self.get_surf_metal_atoms(atoms, list)
-        #         layer_list = self.get_layer_atoms(atoms)
-
-        #         if len(surf_metal_list_tmp) > 3:
-        #             for i in layer_list + list:
-        #                 if i not in total_layer_O_list and i not in total_sub_O_list:
-        #                     prior_ads_list.append(facet)
-
-        #             addable_facet_list.append(facet)
-        #         atoms = self.cluster_actions.recover_rotation(atoms, facet, self.center_point)
-        #     if prior_ads_list:
-        #         self.facet_selection = prior_ads_list[np.random.randint(len(prior_ads_list))]
-        #     else:
-        #         self.facet_selection = addable_facet_list[np.random.randint(len(addable_facet_list))]
-        #     atoms = self.cluster_actions.cluster_rotation(atoms, self.facet_selection, self.center_point)
-
-        #     surf_sites, surf_plane_vector = self.get_surf_sites(atoms)
 
 
         site_idx = np.random.randint(len(surf_sites))
@@ -195,26 +168,33 @@ class OffLatticeKMC():
         tmp_n_O2, tmp_n_O3 = self.n_O2, self.n_O3
         
         # Iterate all possible 
-        # center_point = self.cluster_actions.get_center_point(atoms)
-
         for action_idx in action_list:
             self.n_O2, self.n_O3 = tmp_n_O2, tmp_n_O3
             new_state = atoms.copy()
-            write_arc([new_state], name = "chk_pt.arc")
+
             new_state = self.choose_actions(new_state, action_idx, selected_site, selected_vector)   # here new_state is cluster
             new_state = self.cluster_actions.rectify_atoms_positions(new_state, self.center_point)
 
-            write_arc([new_state], name = "chk_pt_1.arc")
+            write_arc([new_state], name = "chk_pt.arc")
             self.to_constraint(new_state, with_zeolite=self.in_zeolite)
             new_state, energy, _ = self.calculator.to_calc(new_state)
 
-            O_list = []
-            for atom in new_state:
-                if atom.symbol == 'O':
-                    O_list.append(atom.index)
+            # clean env molecules, e.x.p: O3, O2
+            new_state, del_list = self.del_env_adsorbate(new_state)
+            if del_list:
+                new_state, energy, _ = self.calculator.to_calc(new_state)
 
-            current_energy = energy + self.n_O2 * self.E_O2 + self.n_O3 * self.E_O3
-
+            if (2000 - self.n_O2) * 2 - 3 * self.n_O3 == len(new_state) - len(self.initial_slab):
+                current_energy = energy + self.n_O2 * self.E_O2 + self.n_O3 * self.E_O3
+            else:
+                raise ValueError("The num O2 and num O3 is not 匹配!!!!!!!!!!!!!!!!!!!!")
+            
+            if abs(current_energy - previous_energy) >= 0.05 * len(new_state):
+                logger.warning(f"Your structure may break!!!!!!")
+                write_arc([new_state], name = 'broken.arc')
+                current_energy = previous_energy
+                new_state = atoms.copy()
+                
             if action_idx == 0:
                 current_energy = current_energy - self.delta_s
 
@@ -234,9 +214,11 @@ class OffLatticeKMC():
                 tmp_state_dict['adsorbates'].append((self.n_O2, self.n_O3))
 
         prob_list = self.get_prob_list(tmp_state_dict['probabilites'])
+        print(f"The barriers are {tmp_state_dict['barriers']}")
+        print(f"The prob list is {prob_list}")
         prob = np.random.rand()
 
-        if bool(sum(prob_list)):    # 如果prob_list = [0.0, 0.0, 0.0, 0.0], 则直接停止操作，并且reward -= 5
+        if bool(sum(prob_list)):    # 如果prob_list = [0.0, 0.0, 0.0, 0.0], 则直接停止操作
             for i in range(len(prob_list) - 1):
                 if prob_list[i - 1] < prob and prob < prob_list[i]:
                     selected_idx = i
@@ -260,7 +242,7 @@ class OffLatticeKMC():
             state_dict['probability'] = 0.0
             state_dict['barrier'] = 0.0
 
-        print(f"The current action is {state_dict['action']}, current n O2 = {self.n_O2}, current n O3 = {self.n_O3}")
+        print(f"The current action is {state_dict['action']},current energy is {state_dict['energy']}, current n O2 = {self.n_O2}, current n O3 = {self.n_O3}")
 
         return atoms, state_dict
 
@@ -362,7 +344,7 @@ class OffLatticeKMC():
         elif ads_site[3] == 2:
             d = 1.3
         else:
-            d = 1.0
+            d = 0.6
         return d
     
     def _adsorb(self, atoms: ase.Atoms, selected_site:np.ndarray, ads_vector = None) -> ase.Atoms:
@@ -371,12 +353,10 @@ class OffLatticeKMC():
         choosed_adsorbate = np.random.randint(len(self.ads_list))
         ads = self.ads_list[choosed_adsorbate]
             
-        del self.ads_list[choosed_adsorbate]
         if ads:
-            d = 1.5
+            d = self.get_ads_d(ads_site)
             if ads == 2:
                 self.n_O2 -= 1
-                d = self.get_ads_d(ads_site)
                 O1 = Atom('O', (ads_site[0], ads_site[1], ads_site[2] + d))
                 O2 = Atom('O', (ads_site[0], ads_site[1], ads_site[2] + (d + 1.21)))
                 new_state = new_state + O1
@@ -384,6 +364,7 @@ class OffLatticeKMC():
 
             elif ads == 3:
                 self.n_O3 -= 1
+                assert self.n_O3 >= 0
                 O1 = Atom('O', (ads_site[0], ads_site[1], ads_site[2] + d))
                 O2 = Atom('O', (ads_site[0], ads_site[1] + 1.09, ads_site[2] + d + 0.67))
                 O3 = Atom('O', (ads_site[0], ads_site[1] - 1.09, ads_site[2] + d + 0.67))
@@ -490,7 +471,6 @@ class OffLatticeKMC():
             selected_O_index = to_diffuse_O_list[np.random.randint(len(to_diffuse_O_list))]
             diffuse_site = selected_site
             
-            d = 1.5
             for atom in slab:
                 if atom.index == selected_O_index:
                     d = self.get_ads_d(diffuse_site)
@@ -515,14 +495,13 @@ class OffLatticeKMC():
 
             if selected_drill_O_list:
                 selected_O = selected_drill_O_list[np.random.randint(len(selected_drill_O_list))]
-
                 if selected_O in single_layer_O:
                     slab, action_done = self.to_drill_surf(slab, selected_O)
 
         return slab
 
     def lifted_distance(self, drill_site: np.ndarray, pos: np.ndarray) -> float:
-
+        
         r = self.distance(drill_site[0], drill_site[1], drill_site[2] +1.3,
                                     pos[0], pos[1], pos[2])
         
@@ -545,10 +524,11 @@ class OffLatticeKMC():
                 layer_O.append(i.index)
         
         for ads_sites in sub_sites:
+            ads_d = self.get_ads_d(ads_sites)
             to_other_O_distance = []
             if layer_O:
                 for i in layer_O:
-                    distance = self.distance(ads_sites[0], ads_sites[1], ads_sites[2] + 1.3, slab.get_positions()[i][0],
+                    distance = self.distance(ads_sites[0], ads_sites[1], ads_sites[2] + ads_d, slab.get_positions()[i][0],
                                            slab.get_positions()[i][1], slab.get_positions()[i][2])
                     to_other_O_distance.append(distance)
                 if min(to_other_O_distance) > 2 * d_O_O:
@@ -590,22 +570,19 @@ class OffLatticeKMC():
         return slab, action_done
     
     def _dissociate(self, slab:ase.Atoms, selected_site:np.ndarray) -> ase.Atoms:
-        action_done = True
 
         dissociate_O2_list = []        
         all_dissociate_O2_list = self.get_dissociate_O2_list(slab)
         neigh_atom_index_list = self.generate_neigh_atoms(slab, selected_site)
 
         for mole in all_dissociate_O2_list:
-            if mole[0] in neigh_atom_index_list and mole[1] in neigh_atom_index_list:
+            if mole[0][0] in neigh_atom_index_list and mole[0][1] in neigh_atom_index_list:
                 dissociate_O2_list.append(mole)
 
         if dissociate_O2_list:
             OO = dissociate_O2_list[np.random.randint(len(dissociate_O2_list))]
             slab = self.oxy_rotation(slab, OO)
             slab, action_done = self.to_dissociate(slab, OO)
-        else:
-            action_done = False
 
         return slab
     
@@ -649,7 +626,7 @@ class OffLatticeKMC():
 
         surfList = self.get_surf_atoms(slab)
         surf_metal_list = self.get_surf_metal_atoms(slab, surfList)
-        print(f"The num of surf metal is {surf_metal_list}")
+        #print(f"The num of surf metal is {surf_metal_list}")
         if len(surf_metal_list) > 3:
             surf_sites, surf_plane_vector = self.get_surf_sites(slab)
         else:
@@ -671,13 +648,14 @@ class OffLatticeKMC():
             surf_sites, surf_plane_vector = self.get_surf_sites(slab)
 
         for ads_site in surf_sites:
+            ads_d = self.get_ads_d(ads_site)
             for atom_index in layerlist:
                 if slab[atom_index].symbol == 'O':
                     layer_O.append(atom_index)
             to_other_O_distance = []
             if layer_O:
                 for i in layer_O:
-                    to_distance = self.distance(ads_site[0], ads_site[1], ads_site[2] + 1.5, slab.get_positions()[i][0],
+                    to_distance = self.distance(ads_site[0], ads_site[1], ads_site[2] + ads_d, slab.get_positions()[i][0],
                                            slab.get_positions()[i][1], slab.get_positions()[i][2])
                     to_other_O_distance.append(to_distance)
                 if min(to_other_O_distance) > 1.5 * d_O_O:
@@ -689,7 +667,8 @@ class OffLatticeKMC():
 
         O1_distance = []
         for add_1_site in addable_sites:
-            distance_1 = self.distance(add_1_site[0], add_1_site[1], add_1_site[2] + 1.3, slab.get_positions()[atoms[0][0]][0],
+            ads_d_1 = self.get_ads_d(add_1_site)
+            distance_1 = self.distance(add_1_site[0], add_1_site[1], add_1_site[2] + ads_d_1, slab.get_positions()[atoms[0][0]][0],
                                            slab.get_positions()[atoms[0][0]][1], slab.get_positions()[atoms[0][0]][2])
             O1_distance.append(distance_1)
 
@@ -698,13 +677,15 @@ class OffLatticeKMC():
             
             ad_2_sites = []
             for add_site in addable_sites:
-                d = self.distance(add_site[0], add_site[1], add_site[2] + 1.3, O1_site[0], O1_site[1], O1_site[2])
+                ads_d = self.get_ads_d(add_site)
+                d = self.distance(add_site[0], add_site[1], add_site[2] + ads_d, O1_site[0], O1_site[1], O1_site[2])
                 if d > 2.0 * d_O_O:
                     ad_2_sites.append(add_site)
 
             O2_distance = []
             for add_2_site in ad_2_sites:
-                distance_2 = self.distance(add_2_site[0], add_2_site[1], add_2_site[2] + 1.3, slab.get_positions()[atoms[0][1]][0],
+                ads_d_2 = self.get_ads_d(add_2_site)
+                distance_2 = self.distance(add_2_site[0], add_2_site[1], add_2_site[2] + ads_d_2, slab.get_positions()[atoms[0][1]][0],
                                             slab.get_positions()[atoms[0][1]][1], slab.get_positions()[atoms[0][1]][2])
                 O2_distance.append(distance_2)
             
@@ -712,8 +693,6 @@ class OffLatticeKMC():
                 O2_site = ad_2_sites[O2_distance.index(min(O2_distance))]
             else:
                 O2_site = O1_site
-            
-            d_1, d_2 = 1.5, 1.5
 
             d_1 = self.get_ads_d(O1_site)
             d_2 = self.get_ads_d(O2_site)
@@ -735,10 +714,10 @@ class OffLatticeKMC():
 
         else:
             action_done = False
+        print(f"dissociation done is {action_done}")
         return slab, action_done
     
     def _desorb(self, slab:ase.Atoms, selected_site:np.ndarray) -> ase.Atoms:
-        action_done = True
         new_state = slab.copy()
         
         desorb_list = []     
@@ -746,14 +725,14 @@ class OffLatticeKMC():
 
         _,  all_desorb_list = self.to_desorb_adsorbate(slab)
         for mole in all_desorb_list:
-            if len(mole) == 2:
+            if len(mole) == 3 and self.n_O3 > 0:
+                if mole[0] in neigh_atom_index_list and mole[1] in neigh_atom_index_list \
+                                            and mole[2] in neigh_atom_index_list:
+                    desorb_list.append(mole)
+            else:
                 if mole[0] in neigh_atom_index_list and mole[1] in neigh_atom_index_list:
-                    self.ads_list.append(2)
                     desorb_list.append(mole)
-            elif len(mole) == 3:
-                if mole[0] in neigh_atom_index_list and mole[1] in neigh_atom_index_list and mole[2] in neigh_atom_index_list:
-                    self.ads_list.append(3)
-                    desorb_list.append(mole)
+            
 
         if desorb_list:
             desorb = desorb_list[np.random.randint(len(desorb_list))]
@@ -765,9 +744,6 @@ class OffLatticeKMC():
 
                 elif len(desorb) == 3:
                     self.n_O3 += 1
-
-            action_done = False
-        action_done = False
 
         return new_state
     
@@ -806,9 +782,9 @@ class OffLatticeKMC():
         Pd_O_list = []
         desorb_list = []
         if PdOBonds[0]:
-            for i in PdOBonds[0]:
-                Pd_O_list.append(i[0])
-                Pd_O_list.append(i[1])
+            for PdO_bond in PdOBonds[0]:
+                Pd_O_list.append(PdO_bond[0])
+                Pd_O_list.append(PdO_bond[1])
         
         if OOBonds[0]:  # 定义环境中的氧气分子
             for i in OOBonds[0]:
@@ -840,7 +816,8 @@ class OffLatticeKMC():
                 sum_z += atoms.get_positions()[i][2]
 
             modified_z = sum_z / len(list)
-            modified_list = self.label_atoms(atoms, [modified_z - 1.0, modified_z + 1.0])
+            modified_list = self.label_atoms(atoms, [modified_z - self.get_layer_d / 2, 
+                                                         modified_z + self.get_layer_d / 2])
             return modified_list
         else:
             return list
@@ -875,45 +852,55 @@ class OffLatticeKMC():
 
         return surf_metal_list
     
-    def get_surf_atoms(self, atoms:ase.Atoms) -> List:
+    def get_surf_atoms(self, atoms):
         z_list = []
         for i in range(len(atoms)):
             if atoms[i].symbol == self.cluster_metal:
                 z_list.append(atoms.get_positions()[i][2])
+        # z_list = self.modify_z(z_list)
         z_max = max(z_list)
-        surf_z = z_max - r_Pd / 2
+        surf_z = z_max
 
-        surflist = self.label_atoms(atoms, [surf_z - 1.0, surf_z + 1.0])
+        surflist = self.label_atoms(atoms, [surf_z - self.get_layer_d / 2, 
+                                            surf_z + self.get_layer_d / 2])
         modified_surflist = self.modify_slab_layer_atoms(atoms, surflist)
 
         return modified_surflist
     
-    def get_sub_atoms(self, atoms:ase.Atoms) -> List:
+    def get_sub_atoms(self, atoms):
         z_list = []
         for i in range(len(atoms)):
             if atoms[i].symbol == self.cluster_metal:
                 z_list.append(atoms.get_positions()[i][2])
+        # z_list = self.modify_z(z_list)
         z_max = max(z_list)
 
-        sub_z = z_max - r_Pd/2 - 2.0
+        sub_z = z_max
 
-        sublist = self.label_atoms(atoms, [sub_z - 1.0, sub_z + 1.0])
+        sublist = self.label_atoms(atoms, [sub_z - 3 * self.get_layer_d / 2, 
+                                           sub_z - self.get_layer_d / 2])
         modified_sublist = self.modify_slab_layer_atoms(atoms, sublist)
 
         return modified_sublist
     
-    def get_deep_atoms(self, atoms:ase.Atoms) -> List:
+    def get_deep_atoms(self, atoms):
         z_list = []
         for i in range(len(atoms)):
             if atoms[i].symbol == self.cluster_metal:
                 z_list.append(atoms.get_positions()[i][2])
+        # z_list = self.modify_z(z_list)
         z_max = max(z_list)
-        deep_z = z_max - r_Pd/2 - 4.0
+        deep_z = z_max
 
-        deeplist = self.label_atoms(atoms, [deep_z - 1.0, deep_z + 1.0])
+        deeplist = self.label_atoms(atoms, [deep_z - 5 * self.get_layer_d / 2, 
+                                            deep_z - 3 * self.get_layer_d / 2])
         modified_deeplist = self.modify_slab_layer_atoms(atoms, deeplist)
 
         return modified_deeplist
+    
+    @property
+    def get_layer_d(self):
+        return d_Pd_Pd / np.linalg.norm(self.facet_selection)
     
     def get_surf_sites(self, atoms):
         surfList = self.get_surf_atoms(atoms)
@@ -1085,7 +1072,7 @@ class OffLatticeKMC():
             for j in layer_O:
                 if j not in layer_OObond_list:
                     layer_O_atom_list.append(j)
-        layer_O_atom_list = self._map_zeolite(layer_O_atom_list,with_zeolite=True)
+        layer_O_atom_list = self._map_zeolite(layer_O_atom_list,with_zeolite=self.in_zeolite)
         return layer_O_atom_list
     
     def sub_O_atom_list(self, slab:ase.Atoms) -> List:
@@ -1111,7 +1098,7 @@ class OffLatticeKMC():
             for j in sub_O:
                 if j not in sub_OObond_list:
                     sub_O_atom_list.append(j)
-        sub_O_atom_list = self._map_zeolite(sub_O_atom_list, with_zeolite=True)
+        sub_O_atom_list = self._map_zeolite(sub_O_atom_list, with_zeolite=self.in_zeolite)
         return sub_O_atom_list
     
     def get_O_info(self, slab:ase.Atoms) -> List:
@@ -1256,12 +1243,14 @@ class OffLatticeKMC():
     
     '''----------------Whether can do such action------------------'''
     def _can_adsorb(self, atoms:ase.Atoms, target_site: np.ndarray, neigh_atom_index_list:List, ads_vector:List = None) -> bool:
+        ads_d = self.get_ads_d(target_site)
         action_can_do = False
         d_list = []
         for atom_idx in neigh_atom_index_list:
             atom = atoms[atom_idx]
             if atom.symbol == 'O':
-                d = self.distance(target_site[0], target_site[1], target_site[2] + 1.5,atom.position[0], atom.position[1], atom.position[2])
+                d = self.distance(target_site[0], target_site[1], target_site[2] + ads_d,
+                                  atom.position[0], atom.position[1], atom.position[2])
                 d_list.append(d)
         
         if d_list:
@@ -1307,31 +1296,21 @@ class OffLatticeKMC():
     
     '''---------The following part will be on the Transition state---------------'''
     def transition_state_search(self, previous_energy, current_energy, action):
+        print(f"The current action is {action}, and the relative_energy is {current_energy - previous_energy}")
         if action in [0,8]:
             barrier = current_energy - previous_energy + 0.4
         elif action == 1:
-            if current_energy - previous_energy < -1.0:
-                barrier = 0
-            elif current_energy - previous_energy >= -1.0 and current_energy - previous_energy <= 1.0:
-                barrier = np.random.normal(2, 2/3)
-            else:
-                barrier = 4.0
+            barrier =  0.4741 * (current_energy - previous_energy) + 3.168
 
         elif action == 2 or action == 3:
-            if current_energy-previous_energy < 0:
-                barrier = 0
-            else:
-                barrier =  current_energy-previous_energy
-        elif action == 4:
-            barrier = 1.5
+            barrier = math.log(1 + pow(math.e, current_energy-previous_energy), 10)
+
         elif action == 5:
             barrier = 0.4789 *(current_energy - previous_energy) + 0.8986
         elif action == 6:
             barrier = 0.6935 * (current_energy - previous_energy) + 0.6997
         elif action == 7:
             barrier = 0.65 + 0.84 * (current_energy - previous_energy)
-        else:
-            barrier = 1.5
                 
         if barrier > 5.0:
             barrier = 5.0
@@ -1364,3 +1343,66 @@ class OffLatticeKMC():
         mole = molecule(mole)
         energy = self.calculator.to_calc(mole, calc_type = 'single')
         return energy
+
+    '''--------------- del env molecule -------------------'''
+    def del_env_adsorbate(self, slab:Atoms) -> Atoms:
+        slab, del_O3 = self.del_env_O3(slab)
+        # print(f"After del O3, here the slab is {slab}")
+        slab, del_O2 = self.del_env_O2(slab)
+        # print(f"After del O2, here the slab is {slab}")
+
+        return slab, bool(del_O2 or del_O3)
+
+    def del_env_O2(self, slab:Atoms) -> Atoms:
+        ana = Analysis(slab)
+        OOBonds = ana.get_bonds('O', 'O', unique = True)
+        PdOBonds = ana.get_bonds(self.cluster_metal, 'O', unique=True)
+
+        Pd_O_list = []
+        del_list = []
+
+        if PdOBonds[0]:
+            for PdO_bond in PdOBonds[0]:
+                Pd_O_list.extend([PdO_bond[0], PdO_bond[1]])
+        
+        if OOBonds[0]:
+            for OO in OOBonds[0]:
+                if OO[0] not in Pd_O_list and OO[1] not in Pd_O_list:
+                    del_list.extend([OO[0], OO[1]])
+
+        del_list = [del_idx for n,del_idx in enumerate(del_list) if del_idx not in del_list[:n]]
+        print(f"current del env O2 list is {del_list}")
+        del slab[[atom_idx for atom_idx in range(len(slab)) if atom_idx in del_list]]
+
+        self.n_O2 += int(len(del_list)/2)
+
+        return slab, bool(del_list)
+
+
+    def del_env_O3(self, slab:Atoms) -> Atoms:
+        ana = Analysis(slab)
+        PdOBonds = ana.get_bonds(self.cluster_metal, 'O', unique=True)
+        OOOangles = ana.get_angles('O', 'O', 'O',unique = True)
+
+        Pd_O_list = []
+        del_list = []
+        if PdOBonds[0]:
+            for PdO_bond in PdOBonds[0]:
+                Pd_O_list.extend([PdO_bond[0], PdO_bond[1]])
+
+        if OOOangles[0]:
+            for O3 in OOOangles[0]:
+                if O3[0] not in Pd_O_list and O3[1] not in Pd_O_list and O3[2] not in Pd_O_list:
+                    del_list.extend([O3[0], O3[1], O3[2]])
+
+        del_list = [del_idx for n,del_idx in enumerate(del_list) if del_idx not in del_list[:n]]
+        print(f"current del env O3 list is {del_list}")
+
+        # To check whether the OOOO exists
+        if np.ceil(len(del_list)/3) == int(len(del_list)/3):
+            del slab[[atom_idx for atom_idx in range(len(slab)) if atom_idx in del_list]]
+            self.n_O3 += int(len(del_list)/3)
+        else:
+            write_arc([slab], name = "broken_slab.arc")
+        
+        return slab, bool(del_list)
