@@ -853,50 +853,35 @@ class OffLatticeKMC():
         return surf_metal_list
     
     def get_surf_atoms(self, atoms):
-        z_list = []
-        for i in range(len(atoms)):
-            if atoms[i].symbol == self.cluster_metal:
-                z_list.append(atoms.get_positions()[i][2])
-        # z_list = self.modify_z(z_list)
-        z_max = max(z_list)
-        surf_z = z_max
-
-        surflist = self.label_atoms(atoms, [surf_z - self.get_layer_d / 2, 
-                                            surf_z + self.get_layer_d / 2])
+        z_max = self.z_max(atoms)
+        surflist = self.label_atoms(atoms, [z_max - self.get_layer_d / 2, 
+                                            z_max + self.get_layer_d / 2])
         modified_surflist = self.modify_slab_layer_atoms(atoms, surflist)
 
         return modified_surflist
     
     def get_sub_atoms(self, atoms):
-        z_list = []
-        for i in range(len(atoms)):
-            if atoms[i].symbol == self.cluster_metal:
-                z_list.append(atoms.get_positions()[i][2])
-        # z_list = self.modify_z(z_list)
-        z_max = max(z_list)
-
-        sub_z = z_max
-
-        sublist = self.label_atoms(atoms, [sub_z - 3 * self.get_layer_d / 2, 
-                                           sub_z - self.get_layer_d / 2])
+        z_max = self.z_max(atoms)
+        sublist = self.label_atoms(atoms, [z_max - 3 * self.get_layer_d / 2, 
+                                           z_max - self.get_layer_d / 2])
         modified_sublist = self.modify_slab_layer_atoms(atoms, sublist)
 
         return modified_sublist
     
     def get_deep_atoms(self, atoms):
+        z_max = self.z_max(atoms)
+        deeplist = self.label_atoms(atoms, [z_max - 5 * self.get_layer_d / 2, 
+                                            z_max - 3 * self.get_layer_d / 2])
+        modified_deeplist = self.modify_slab_layer_atoms(atoms, deeplist)
+
+        return modified_deeplist
+    
+    def z_max(self, atoms:Atoms) -> List:
         z_list = []
         for i in range(len(atoms)):
             if atoms[i].symbol == self.cluster_metal:
                 z_list.append(atoms.get_positions()[i][2])
-        # z_list = self.modify_z(z_list)
-        z_max = max(z_list)
-        deep_z = z_max
-
-        deeplist = self.label_atoms(atoms, [deep_z - 5 * self.get_layer_d / 2, 
-                                            deep_z - 3 * self.get_layer_d / 2])
-        modified_deeplist = self.modify_slab_layer_atoms(atoms, deeplist)
-
-        return modified_deeplist
+        return max(z_list)
     
     @property
     def get_layer_d(self):
@@ -1296,26 +1281,23 @@ class OffLatticeKMC():
     
     '''---------The following part will be on the Transition state---------------'''
     def transition_state_search(self, previous_energy, current_energy, action):
-        print(f"The current action is {action}, and the relative_energy is {current_energy - previous_energy}")
+        relative_energy = current_energy - previous_energy
+        print(f"The current action is {action}, and the relative_energy is {relative_energy}")
         if action in [0,8]:
-            barrier = current_energy - previous_energy + 0.4
-        elif action == 1:
-            barrier =  0.4741 * (current_energy - previous_energy) + 3.168
+            barrier = relative_energy + 0.4
+        if action == 1:
+            barrier =  0.258 * relative_energy + 2.3616
 
         elif action == 2 or action == 3:
-            barrier = math.log(1 + pow(math.e, current_energy-previous_energy), 10)
-
+            barrier = math.log(1 + pow(math.e, current_energy-previous_energy), math.e)
         elif action == 5:
-            barrier = 0.4789 *(current_energy - previous_energy) + 0.8986
+            barrier = 0.4704 * relative_energy + 0.9472
         elif action == 6:
-            barrier = 0.6935 * (current_energy - previous_energy) + 0.6997
+            barrier = 0.6771 * relative_energy + 0.7784
         elif action == 7:
-            barrier = 0.65 + 0.84 * (current_energy - previous_energy)
+            barrier = 0.88 * relative_energy + 0.65
                 
-        if barrier > 5.0:
-            barrier = 5.0
-        elif barrier < 0:
-            barrier = 0
+        barrier = min(max(relative_energy, barrier,0), 5)
 
         return barrier
     
